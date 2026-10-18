@@ -1,0 +1,10 @@
+# Install a CUDA-enabled PyTorch build compatible with the server GPU separately.
+torch>=2.9,<3
+torchvision>=0.24,<1
+numpy>=2,<3
+Pillow>=10
+transformers==4.57.6
+huggingface-hub>=0.34,<1
+tokenizers==0.22.2
+safetensors>=0.4.3
+pycocotools>=2.0.10

@@ -1,0 +1,24 @@
+{
+  "model": "small_vit",
+  "dataset": "synthetic",
+  "data": {
+    "seed": 20261018,
+    "objects": 2,
+    "supersample": 3,
+    "families": {
+      "train": 100000,
+      "dev": 2048,
+      "calibration": 512,
+      "validation": 512,
+      "test": 2048
+    }
+  },
+  "training": {
+    "seed": 0,
+    "device": "cuda:0",
+    "epochs": 10,
+    "weight_decay": 0.01,
+    "precision": "bf16",
+    "workers": 4
+  }
+}
