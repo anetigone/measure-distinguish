@@ -77,11 +77,16 @@ COCO 扩展使用 train2017 和 instances_train2017.json：
 
 ```bash
 python scripts/download_data.py --root datasets/coco
+# 可选公共镜像：
+python scripts/download_data.py --root datasets/coco --endpoint https://hf-mirror.com
 # 只下载标注：
 python scripts/download_data.py --root datasets/coco --annotations-only
 ```
 
-主合成数据在线生成，不需下载。数据脚本支持中断续传，解压后移除 zip，不保存无关 COCO 标注。
+COCO 默认从 Hugging Face 的 `pcuenq/coco-2017-mirror` 下载原版压缩包，不再请求 COCO 下载站。
+数据脚本默认设置 `HF_HUB_DISABLE_XET=1`，规避 Xet 客户端的 CAS 鉴权问题；显式设置为 `0` 可恢复 Xet。
+主合成数据在线生成，不需下载。数据脚本使用 Hub 的断点续传，解压后移除 zip，不保存无关 COCO 标注。
+旧下载器的 `.zip.part` 不会自动续接到 Hub 下载；已经解压完成的数据和完整 zip 会复用。
 
 ## 服务器真实实验
 

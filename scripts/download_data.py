@@ -1,31 +1,24 @@
-"""Download/extract the COCO train2017 images and instance annotations."""
+"""Download COCO 2017 from Hugging Face and extract images/instance annotations."""
 import argparse
+import os
 from pathlib import Path
 import shutil
-from urllib.request import Request, urlopen
 import zipfile
 
-URLS = {
-    "images": "https://images.cocodataset.org/zips/train2017.zip",
-    "annotations": "https://images.cocodataset.org/annotations/annotations_trainval2017.zip",
+REPO_ID = "pcuenq/coco-2017-mirror"
+FILES = {
+    "images": "train2017.zip",
+    "annotations": "annotations_trainval2017.zip",
 }
 
 
-def download(url, destination):
-    partial = destination.with_suffix(destination.suffix+".part")
-    offset = partial.stat().st_size if partial.exists() else 0
-    headers = {"Range": f"bytes={offset}-"} if offset else {}
-    with urlopen(Request(url, headers=headers), timeout=120) as response:
-        append = bool(offset and response.status == 206)
-        if append and not response.headers.get("Content-Range", "").startswith(f"bytes {offset}-"):
-            raise OSError("Server returned an unexpected resume range")
-        expected = response.headers.get("Content-Length")
-        with partial.open("ab" if append else "wb") as stream:
-            start = stream.tell()
-            shutil.copyfileobj(response, stream, length=1024*1024)
-            if expected is not None and stream.tell()-start != int(expected):
-                raise OSError("Download interrupted; rerun to resume")
-    partial.replace(destination)
+def download(filename, root, endpoint):
+    from huggingface_hub import hf_hub_download
+
+    return Path(hf_hub_download(
+        repo_id=REPO_ID, repo_type="dataset", filename=filename,
+        local_dir=str(root), endpoint=endpoint,
+    ))
 
 
 def extract(archive, root, prefix):
@@ -48,13 +41,15 @@ def extract(archive, root, prefix):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("datasets/coco"))
+    parser.add_argument("--endpoint", help="Optional Hugging Face-compatible public mirror")
     parser.add_argument("--annotations-only", action="store_true")
     parser.add_argument("--list", action="store_true", help="Print URLs without downloading")
     args = parser.parse_args()
     selected = ["annotations"] if args.annotations_only else ["images", "annotations"]
     if args.list:
         for name in selected:
-            print(f"{name}: {URLS[name]}")
+            endpoint = args.endpoint or os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+            print(f"{name}: {endpoint.rstrip('/')}/datasets/{REPO_ID}/resolve/main/{FILES[name]}")
         return
     args.root.mkdir(parents=True, exist_ok=True)
     for name in selected:
@@ -63,10 +58,10 @@ def main():
         if done.exists():
             print(f"Already available: {done.parent}")
             continue
-        archive = args.root/URLS[name].rsplit("/", 1)[-1]
+        archive = args.root/FILES[name]
         if not archive.exists():
-            print(f"Downloading {URLS[name]}", flush=True)
-            download(URLS[name], archive)
+            print(f"Downloading {REPO_ID}/{FILES[name]}", flush=True)
+            archive = download(FILES[name], args.root, args.endpoint)
         prefix = "train2017/" if name == "images" else "annotations/instances_train2017.json"
         extract(archive, args.root, prefix)
         if name == "images":
