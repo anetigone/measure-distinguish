@@ -102,6 +102,7 @@ python -m measure_distinguish.run_experiment --dataset coco_rotation --data-root
 ```
 
 也支持直接执行 `python measure_distinguish/run_experiment.py`。默认 stage=plan，不启动训练。
+训练进度条显示 epoch、batch 完成比例、速度、已用时间、当前轮预计剩余时间及当前/平均 loss；验证和独立评估显示进度及累计 MAE（度）。每轮结束仍输出 JSON 指标。
 一份公共配置控制数据量、epoch、seed、精度等；选择模型/数据时自动应用相应的分辨率、batch 和学习率默认值，plan 显示最终参数。
 SmallViT/ResNet 的合成图像为 128，DINOv2 或 COCO 为 224；DINOv2 batch=32，其余为 64；预训练适配 lr=1e-5，其余为 3e-4。
 如需手动设置，直接修改同一份公共配置里的 data.size、training.batch_size、training.lr。

@@ -12,6 +12,7 @@ import time
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from .data import make_dataset
 from .models import make_model
@@ -63,13 +64,19 @@ def evaluate(model, loader, device, predictions_path=None):
     was_training = model.training
     model.eval()
     errors, rows = [], []
-    for batch in loader:
+    error_sum = 0.
+    split = getattr(loader.dataset, "split", "evaluation")
+    progress = tqdm(loader, desc=f"Evaluate {split}", unit="batch", dynamic_ncols=True)
+    for batch in progress:
         # Evaluation is FP32 even when training uses BF16.
         prediction = model(batch["image"].to(device)).float().cpu()
         if not torch.isfinite(prediction).all():
             raise FloatingPointError("Non-finite task output")
         target = batch["target"]
-        errors.extend(((prediction-target).abs()*45).tolist())
+        batch_errors = ((prediction-target).abs()*45).tolist()
+        errors.extend(batch_errors)
+        error_sum += sum(batch_errors)
+        progress.set_postfix(mae_deg=f"{error_sum/len(errors):.3f}", refresh=False)
         if predictions_path is not None:
             for i in range(len(prediction)):
                 count = int(batch["object_count"][i])
@@ -147,7 +154,10 @@ def train(config, output: Path, resume=False):
     for epoch in range(start_epoch, config["training"]["epochs"]):
         model.train()
         total_loss, count = 0., 0
-        for batch in loader_for(training_data, config, shuffle=True, epoch=epoch):
+        progress = tqdm(loader_for(training_data, config, shuffle=True, epoch=epoch),
+                        desc=f"Train {epoch+1}/{config['training']['epochs']}",
+                        unit="batch", dynamic_ncols=True)
+        for batch in progress:
             optimizer.zero_grad(set_to_none=True)
             images, targets = batch["image"].to(device), batch["target"].to(device)
             with amp_context(config):
@@ -158,8 +168,11 @@ def train(config, output: Path, resume=False):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1., error_if_nonfinite=True)
             optimizer.step()
-            total_loss += float(loss.detach())*len(images)
+            batch_loss = float(loss.detach())
+            total_loss += batch_loss*len(images)
             count += len(images)
+            progress.set_postfix(loss=f"{batch_loss:.5f}",
+                                 avg_loss=f"{total_loss/count:.5f}", refresh=False)
         metrics = evaluate(model, loader_for(dev_data, config), device)
         scheduler.step()
         row = {"epoch": epoch, "train_mse": total_loss/count, **metrics}

@@ -8,3 +8,4 @@ huggingface-hub>=0.34,<1
 tokenizers==0.22.2
 safetensors>=0.4.3
 pycocotools>=2.0.10
+tqdm>=4.66,<5
