@@ -86,6 +86,8 @@ def evaluate(model, loader, device, predictions_path=None):
                     "sample_id": batch["sample_id"][i], "family_id": batch["family_id"][i],
                     "source_id": batch["source_id"][i], "condition": batch["condition"][i],
                     "reference_present": bool(batch["reference_present"][i]),
+                    "protocol": batch["protocol"][i],
+                    "delta_index": int(batch["delta_index"][i]),
                     "angles_deg": angles, "target_index": target_index,
                     "spacing": float(batch["spacing"][i]),
                     "target_deg": float(target[i])*45,

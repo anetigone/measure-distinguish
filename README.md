@@ -122,4 +122,43 @@ python -m measure_distinguish.run_experiment --stage evaluate --checkpoint outpu
 评估的逐样本响应留在同一 run 的 `predictions_<split>.jsonl`，指标汇入该 run 的 `metrics.json`。
 默认训练只使用 train/dev；确定诊断规则后再显式评估 test。程序不自动给网络贴机制标签。
 
-完整研究设计见 `EXPERIMENT_PLAN.md`。目前尚未执行服务器正式实验。
+拿到 calibration/validation 的预测文件后，可在本地汇总配对干预（无需 checkpoint）：
+
+```bash
+python scripts/analyze_predictions.py --root outputs
+```
+
+汇总统一覆盖 `outputs/analysis/REPORT.md` 和 `summary.json`；按 scene family bootstrap，不把同场景的干预图当作独立样本。敏感性是输入输出有限差分，不直接代表内部聚合权重。
+
+## 第二轮：匹配距离对照与三对象验证
+
+首轮 SmallViT/ResNet-18 的 seed=0 结果已回传到 outputs/；任务准确，但未通过 E2 干扰错误门槛。第二轮先补评估，不重复双对象训练。以下命令在保存有 best.pt 的服务器项目根目录运行：
+
+```bash
+python -m measure_distinguish.run_experiment --stage evaluate --checkpoint outputs/small_vit_synthetic_s0/best.pt --split validation --protocol crowding
+python -m measure_distinguish.run_experiment --stage evaluate --checkpoint outputs/resnet18_synthetic_s0/best.pt --split validation --protocol crowding
+python scripts/analyze_crowding.py --root outputs
+```
+
+每个 family 固定目标位置、方向、背景与提示，只移动干扰物，比较孤立、1.4/2.0/3.0 倍直径距离。每个方向差有 20 张图（孤立/孤立目标+2°，三个距离各六种干预），validation 默认 512 families、40960 张图。可先加 `--families 128` 小跑；完整评估应使用新的 `--output`，以免覆盖已有预测。路径始终为 `predictions_validation_crowding.jsonl`；指标单列为 validation_crowding，不覆盖首轮结果。
+
+随后仅增加对象数，从头训练三对象模型；训练和开发数据也使用三个对象及相同距离支持集，包含约 20% 孤立对照。模型输出目录自动加 `_o3`，不覆盖双对象基线：
+
+三对象默认启用 `data.target_anchored=true`：目标中心独立于距离，其他对象围绕目标放置，训练与配对评估共用此布局。旧双对象 checkpoint 保留原训练配置；其匹配距离评估可能包含原训练未覆盖的位置组合，只作为补充诊断，不能单凭该结果宣称分布内拥挤效应。三对象训练同时改变了布局支持，因此跨 run 的误差差异也不能唯一归因于对象数。
+
+```bash
+python -m measure_distinguish.run_experiment --stage plan --objects 3
+python -m measure_distinguish.run_experiment --stage train --objects 3
+python -m measure_distinguish.run_experiment --stage evaluate --checkpoint outputs/small_vit_synthetic_o3_s0/best.pt --split validation --protocol crowding
+python -m measure_distinguish.run_experiment --model resnet18 --stage train --objects 3
+python -m measure_distinguish.run_experiment --stage evaluate --checkpoint outputs/resnet18_synthetic_o3_s0/best.pt --split validation --protocol crowding
+python scripts/analyze_crowding.py --root outputs
+```
+
+汇总写入 `outputs/analysis/CROWDING_REPORT.md` 和 crowding_summary.json；以 family 为单位计算配对差和 bootstrap 区间。三对象条件的 +2° 干预仅改变指定的一个干扰物，不能解释为全部干扰物的总效应。增加对象数的模型分别训练，不能把跨模型差异解释为单纯的对象数因果效应。
+
+沿用 E2 继续标准：孤立 MAE≤3°，近减远 MAE≥2°且 95% 区间下界>0，并有稳定、可复现的配对干扰效应。单 seed 只用于筛查；通过后再补独立训练 seeds。若仍不通过，暂停机制归因，不继续增加困难条件寻找阳性结果。当前不评估 locked test。
+
+无需 checkpoint 的配对与分析校验：`python scripts/check_crowding.py`。它验证目标/背景固定、距离缩放、完美目标报告的零干扰结果、已知 4° 近距误差的恢复，以及不完整 family 的拒绝；不将其视为真实网络研究结果。
+
+完整研究设计见 `EXPERIMENT_PLAN.md`。第二轮真实网络结果尚未运行。

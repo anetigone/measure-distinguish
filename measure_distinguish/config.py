@@ -19,6 +19,8 @@ def build_config(base, model=None, dataset=None, initialization="pretrained",
         raise ValueError(f"Unknown dataset: {kind}")
     data, training = config["data"], config["training"]
     data["kind"] = kind
+    if data.get("objects", 2) == 3:
+        data.setdefault("target_anchored", True)
     data.setdefault("size", 224 if name == "dinov2_small" or kind == "coco_rotation" else 128)
     training.setdefault("batch_size", 32 if name == "dinov2_small" else 64)
     pretrained = name == "dinov2_small" and initialization == "pretrained"

@@ -19,6 +19,8 @@ SPLITS = {"train": 1, "dev": 2, "calibration": 3, "validation": 4, "test": 5}
 CAL_DELTAS = (0., -5., 5., -10., 10.)
 TEST_DELTAS = (-20., 20., -30., 30.)
 CONDITIONS = ("base", "target_plus", "distractor_plus", "both_plus", "swap", "cue_swap")
+CROWDING_SPACINGS = (1.4, 2., 3.)
+CROWDING_VARIANTS = 2 + len(CROWDING_SPACINGS)*len(CONDITIONS)
 
 
 def family_seed(seed: int, split: str, family: int) -> int:
@@ -52,7 +54,7 @@ class Scene:
 def make_scene(seed: int, split: str, family: int, size: int = 128,
                objects: int = 2, spacing: float | None = None,
                delta: float | None = None, isolated: bool = False,
-               radius_fraction: float = .055) -> Scene:
+               radius_fraction: float = .055, target_anchored: bool = False) -> Scene:
     if objects not in (2, 3, 5) or size < 48:
         raise ValueError("Use 2/3/5 objects and image size >= 48")
     rng = np.random.default_rng(family_seed(seed, split, family))
@@ -78,6 +80,23 @@ def make_scene(seed: int, split: str, family: int, size: int = 128,
     if np.any(centers - 1.28*radius < 0) or np.any(centers + 1.28*radius >= size):
         raise ValueError("Layout would crop an object or cue")
     target = int(rng.integers(objects))
+    if target_anchored:
+        if objects not in (2, 3):
+            raise ValueError("Target-anchored layouts support 2/3 objects")
+        offsets = centers-centers[target]
+        # Draw the target across the common feasible canvas for ALL distances.
+        # Keeping it at image center would leak the answer through centrality.
+        far_offsets = offsets*(max(CROWDING_SPACINGS)/spacing)
+        margin = 1.28*radius
+        lower = margin-far_offsets.min(axis=0)
+        upper = size-1-margin-far_offsets.max(axis=0)
+        if np.any(lower >= upper):
+            raise ValueError("No common canvas for target-anchored spacing support")
+        unit_position = (center/size-.47)/.06
+        anchor = lower+unit_position*(upper-lower)
+        centers = offsets+anchor
+        if np.any(centers-1.28*radius < 0) or np.any(centers+1.28*radius >= size):
+            raise ValueError("Target-anchored layout would crop an object or cue")
     # IID task training gives target and distractors the SAME marginal range:
     # selecting the most vertical object must not solve the task without cue.
     # Intervention families reserve a 2-degree margin for finite differences.
@@ -113,6 +132,18 @@ def intervene(scene: Scene, kind: str, step: float = 2.) -> Scene:
     if any(abs(x) > 45 for x in angles):
         raise ValueError("Intervention exceeds local angle coordinate")
     return replace(scene, angles=tuple(angles), target=target, condition=kind)
+
+
+def matched_spacing(scene: Scene, spacing: float) -> Scene:
+    """Move distractors around a fixed target; preserve all other scene variables."""
+    if spacing not in CROWDING_SPACINGS:
+        raise ValueError("Unknown matched spacing")
+    centers = np.asarray(scene.centers)
+    anchor = centers[scene.target]
+    centers = anchor + (centers-anchor)*(spacing/scene.spacing)
+    if np.any(centers-1.28*scene.radius < 0) or np.any(centers+1.28*scene.radius >= scene.size):
+        raise ValueError("Matched spacing would crop an object or cue")
+    return replace(scene, centers=tuple(map(tuple, centers.tolist())), spacing=spacing)
 
 
 def render_scene(scene: Scene, supersample: int = 3, asset: Image.Image | None = None
@@ -187,17 +218,25 @@ class OrientationDataset(Dataset):
     """
     def __init__(self, split: str, families: int, seed: int = 0, size: int = 128,
                  objects: int = 2, protocol: str = "iid", spacing: float | None = None,
-                 supersample: int = 3, asset_bank=None, radius_fraction: float = .055):
-        if split not in SPLITS or families <= 0 or protocol not in ("iid", "interventions"):
+                 supersample: int = 3, asset_bank=None, radius_fraction: float = .055,
+                 target_anchored: bool = False):
+        if split not in SPLITS or families <= 0 or protocol not in ("iid", "interventions", "crowding"):
             raise ValueError("Invalid dataset specification")
-        if protocol == "interventions" and split in ("train", "dev"):
+        if protocol != "iid" and split in ("train", "dev"):
             raise ValueError("Keep mechanism calibration separate from task development")
         self.split, self.families, self.seed = split, families, seed
         self.size, self.objects, self.protocol = size, objects, protocol
         self.spacing, self.supersample, self.asset_bank = spacing, supersample, asset_bank
         self.radius_fraction = radius_fraction
+        self.target_anchored = target_anchored
         self.deltas = CAL_DELTAS if split == "calibration" else TEST_DELTAS
         self.variants = 1 if protocol == "iid" else len(self.deltas)*len(CONDITIONS)
+        if protocol == "crowding":
+            if objects not in (2, 3):
+                raise ValueError("Matched crowding is validated for 2/3 objects only")
+            if objects != 2 and asset_bank is not None:
+                raise ValueError("First matched multi-object experiment uses synthetic data")
+            self.variants = len(self.deltas)*CROWDING_VARIANTS
 
     def __len__(self):
         return self.families*self.variants
@@ -210,13 +249,23 @@ class OrientationDataset(Dataset):
             # Hold nuisance families fixed; isolated scenes are a task control.
             isolated = family_seed(self.seed, self.split, family) % 5 == 0
             return make_scene(self.seed, self.split, family, self.size, self.objects,
-                              self.spacing, isolated=isolated, radius_fraction=self.radius_fraction)
-        delta_index, condition_index = divmod(variant, len(CONDITIONS))
+                              self.spacing, isolated=isolated, radius_fraction=self.radius_fraction,
+                              target_anchored=self.target_anchored)
+        block_size = CROWDING_VARIANTS if self.protocol == "crowding" else len(CONDITIONS)
+        delta_index, condition_index = divmod(variant, block_size)
         scene = make_scene(self.seed, self.split, family, self.size, self.objects,
-                           self.spacing, delta=self.deltas[delta_index], radius_fraction=self.radius_fraction)
+                           self.spacing, delta=self.deltas[delta_index], radius_fraction=self.radius_fraction,
+                           target_anchored=self.target_anchored)
         # Multi-object nuisance angles also reserve the intervention margin.
         if max(scene.angles) > 43:
             scene = replace(scene, angles=tuple(min(x, 43.) for x in scene.angles))
+        if self.protocol == "crowding":
+            if condition_index < 2:
+                angle = scene.label + 2.*condition_index
+                return replace(scene, centers=(scene.centers[scene.target],), angles=(angle,),
+                               target=0, condition=("isolated", "isolated_target_plus")[condition_index])
+            spacing_index, condition_index = divmod(condition_index-2, len(CONDITIONS))
+            scene = matched_spacing(scene, CROWDING_SPACINGS[spacing_index])
         return intervene(scene, CONDITIONS[condition_index])
 
     def __getitem__(self, index):
@@ -234,6 +283,9 @@ class OrientationDataset(Dataset):
                 "cue_mask": cue_mask, "family_id": scene.family_id,
                 "sample_id": f"{scene.family_id}:{index % self.variants}",
                 "condition": scene.condition, "spacing": scene.spacing,
+                "protocol": self.protocol,
+                "delta_index": -1 if self.protocol == "iid" else
+                    (index % self.variants)//(CROWDING_VARIANTS if self.protocol == "crowding" else len(CONDITIONS)),
                 "reference_present": asset is not None,
                 "source_id": "synthetic" if source is None else str(source)}
 
@@ -250,4 +302,4 @@ def make_dataset(config: dict, split: str, protocol: str = "iid") -> Orientation
     return OrientationDataset(split, data["families"][split], data.get("seed", 0),
                               data.get("size", 128), data.get("objects", 2), protocol,
                               data.get("spacing"), data.get("supersample", 3), asset_bank,
-                              data.get("radius_fraction", .055))
+                              data.get("radius_fraction", .055), data.get("target_anchored", False))
